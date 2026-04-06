@@ -12,12 +12,14 @@ permissions:
 jobs:
   trade:
     runs-on: ubuntu-latest
+    # 👇 新增这一段：强制所有的 JavaScript Actions 使用最新的 Node.js 24
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      
     steps:
-      # 升级到 v4
       - name: 检出代码
         uses: actions/checkout@v4
 
-      # 升级到 v5
       - name: 设置 Python 3.10
         uses: actions/setup-python@v5
         with:
