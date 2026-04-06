@@ -1,0 +1,37 @@
+name: JoinQuant Strategy Auto Run
+
+on:
+  schedule:
+    # GitHub使用UTC时间。北京时间 14:40 对应 UTC 时间 06:40
+    - cron: '40 6 * * 5'
+  workflow_dispatch: # 允许在 Actions 页面手动点击执行
+
+permissions:
+  contents: write # 赋予修改代码库的权限，用于保存 portfolio_state.json
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置 Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 安装运行依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行策略代码
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python strategy.py
+
+      - name: 自动保存账户状态
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add portfolio_state.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "update portfolio state" && git push)
