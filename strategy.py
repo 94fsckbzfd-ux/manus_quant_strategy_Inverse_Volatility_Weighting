@@ -100,8 +100,7 @@ def market_trade():
             state['cash'] += state['positions'][stock] * current_prices[stock]
         state['positions'] = {}
         with open(STATE_FILE, 'w') as f: json.dump(state, f)
-        send_pushplus("🚨 紧急风控触发：全仓清空！", "  
-".join(logs))
+        send_pushplus("🚨 紧急风控触发：全仓清空！", "<br>".join(logs))
         return
 
     # --- B. 冷静期维护 ---
@@ -113,8 +112,7 @@ def market_trade():
         else:
             logs.append(f"❄️ 冷静期中，剩余 {state['cool_down_weeks']} 周。")
             with open(STATE_FILE, 'w') as f: json.dump(state, f)
-            send_pushplus("日间监控 - 冷静期中", "  
-".join(logs))
+            send_pushplus("日间监控 - 冷静期中", "<br>".join(logs))
             return
 
     # --- C. 策略逻辑 (仅周五生成建议) ---
@@ -122,8 +120,7 @@ def market_trade():
     logs.append(f"📡 RSRS信号: {rsrs_signal:.4f} (阈值: {S_BUY})")
 
     if not is_friday:
-        send_pushplus("日间监控报告 - 趋势观察", "  
-".join(logs))
+        send_pushplus("日间监控报告 - 趋势观察", "<br>".join(logs))
         return
 
     # 周五正式逻辑
@@ -186,8 +183,7 @@ def market_trade():
             state['cash'] -= shares * curr_price
 
     with open(STATE_FILE, 'w') as f: json.dump(state, f)
-    send_pushplus(f"🚀 周五正式调仓报告 ({datetime.now().strftime('%Y-%m-%d')})", "  
-".join(logs))
+    send_pushplus(f"🚀 周五正式调仓报告 ({datetime.now().strftime('%Y-%m-%d')})", "<br>".join(logs))
 
 if __name__ == "__main__":
     market_trade()
