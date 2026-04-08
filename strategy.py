@@ -43,7 +43,7 @@ def get_price_tencent(code, count):
     market = 'sh' if str(code).startswith(('5', '6', '11', '588')) else 'sz'
     url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market}{code},day,,,{count},qfq"
     try:
-        resp = requests.get(url, timeout=10 ).json()
+        resp = requests.get(url, timeout=10).json()
         data_node = resp.get("data", {}).get(f"{market}{code}", {})
         k_list = data_node.get("qfqday", data_node.get("day", []))
         if not k_list: return pd.DataFrame()
@@ -56,7 +56,7 @@ def send_pushplus(title, content):
     if not PUSHPLUS_TOKEN: return
     url = 'http://www.pushplus.plus/send'
     data = {"token": PUSHPLUS_TOKEN, "title": title, "content": content, "template": "html"}
-    requests.post(url, json=data )
+    requests.post(url, json=data)
 
 def get_rsrs_signal():
     prices = get_price_tencent(MARKET_ANCHOR, count=N_DAYS + M_DAYS)
@@ -68,11 +68,35 @@ def get_rsrs_signal():
         betas.append(model.coef_[0])
     return (betas[-1] - np.mean(betas)) / np.std(betas) if np.std(betas) != 0 else 0
 
+def build_position_block(state, current_prices, portfolio_value):
+    """生成当前持仓的 HTML 展示块，用于插入每次推送通知。"""
+    positions = state.get('positions', {})
+    lines = ["<h3>📋 当前持仓：</h3>"]
+    if not positions:
+        lines.append("<p>🈳 当前空仓（持有现金）</p>")
+    else:
+        lines.append("<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;'>")
+        lines.append("<tr><th>代码</th><th>名称</th><th>持仓份额</th><th>现价</th><th>市值</th><th>占比</th></tr>")
+        for code, shares in positions.items():
+            price = current_prices.get(code, 0)
+            market_val = shares * price
+            ratio = market_val / portfolio_value if portfolio_value > 0 else 0
+            name = STOCK_NAMES.get(str(code), "未知标的")
+            lines.append(
+                f"<tr><td>{code}</td><td>{name}</td><td>{shares:,}</td>"
+                f"<td>¥{price:.4f}</td><td>¥{market_val:,.2f}</td><td>{ratio:.2%}</td></tr>"
+            )
+        lines.append("</table>")
+    cash = state.get('cash', 0)
+    cash_ratio = cash / portfolio_value if portfolio_value > 0 else 0
+    lines.append(f"<p>💰 可用现金: ¥{cash:,.2f}（占比 {cash_ratio:.2%}）</p>")
+    return "".join(lines)
+
 # ================= 核心逻辑 =================
 def market_trade():
-    weekday = datetime.now().weekday() # 0-6, 4是周五
+    weekday = datetime.now().weekday()  # 0-6, 4是周五
     is_friday = (weekday == 4)
-    
+
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f: state = json.load(f)
     else:
@@ -87,14 +111,17 @@ def market_trade():
     portfolio_value = state['cash'] + sum(state['positions'].get(c, 0) * current_prices.get(c, 0) for c in state['positions'])
     if portfolio_value > state['peak_value']: state['peak_value'] = portfolio_value
     current_drawdown = (portfolio_value - state['peak_value']) / state['peak_value'] if state['peak_value'] > 0 else 0
-    
+
     logs = [f"📅 运行日期: {datetime.now().strftime('%Y-%m-%d')} (周{weekday+1})"]
     logs.append(f"📊 账户总净值: ¥{portfolio_value:,.2f} | 峰值: ¥{state['peak_value']:,.2f}")
     logs.append(f"📉 当前回撤: {current_drawdown:+.2%}")
 
+    # 插入当前持仓展示
+    logs.append(build_position_block(state, current_prices, portfolio_value))
+
     # --- A. 紧急风控 (每日检查) ---
     if current_drawdown <= -MAX_DRAWDOWN_LIMIT:
-        logs.append(f"🚨 <b>紧急警报：回撤触及止损线！</b> 立即清空所有持仓。")
+        logs.append("<b>🚨 紧急警报：回撤触及止损线！立即清空所有持仓。</b>")
         state['is_cooling'], state['cool_down_weeks'] = True, 2
         for stock in list(state['positions'].keys()):
             state['cash'] += state['positions'][stock] * current_prices[stock]
@@ -136,7 +163,7 @@ def market_trade():
             best_alpha = sorted(scores, key=scores.get, reverse=True)[0]
             selected_stocks.append(best_alpha)
             logs.append(f"⚔️ 进攻引擎: 选中 {get_stock_display(best_alpha)}")
-            
+
     beta_scores = {}
     for stock in BETA_POOL:
         p = get_price_tencent(stock, count=21)
@@ -162,7 +189,7 @@ def market_trade():
     inv_vol_sum = sum([1.0/v for v in vols.values()])
     for stock in selected_stocks: weights[stock] = (1.0 / vols[stock]) / inv_vol_sum
 
-    # 更新虚拟盘并生成建议
+    # 调仓建议
     logs.append("<h3>🛒 本周正式调仓建议：</h3><ul>")
     for stock, weight in weights.items():
         logs.append(f"<li>标的: <b>{get_stock_display(stock)}</b> | 建议配比: <b>{weight:.2%}</b></li>")
@@ -181,6 +208,11 @@ def market_trade():
             state['cash'] += old_shares * curr_price
             state['positions'][stock] = shares
             state['cash'] -= shares * curr_price
+
+    # 调仓后更新持仓展示
+    new_portfolio_value = state['cash'] + sum(state['positions'].get(c, 0) * current_prices.get(c, 0) for c in state['positions'])
+    logs.append("<h3>📋 调仓后最新持仓：</h3>")
+    logs.append(build_position_block(state, current_prices, new_portfolio_value))
 
     with open(STATE_FILE, 'w') as f: json.dump(state, f)
     send_pushplus(f"🚀 周五正式调仓报告 ({datetime.now().strftime('%Y-%m-%d')})", "<br>".join(logs))
