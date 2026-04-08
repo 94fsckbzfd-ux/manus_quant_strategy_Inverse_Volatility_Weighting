@@ -1,4 +1,4 @@
-requests
-numpy
 pandas
+numpy
 scikit-learn
+requests
