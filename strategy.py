@@ -29,7 +29,8 @@ CASH_CODE = '511880'
 
 N_DAYS, M_DAYS = 18, 250
 S_BUY = 0.8
-MAX_DRAWDOWN_LIMIT = 0.15
+MAX_DRAWDOWN_LIMIT = 0.15   # 组合止损线：回撤超过 15% 触发清仓
+TAKE_PROFIT_LIMIT = 0.20    # 组合止盈线：盈利超过 20% 触发提醒
 INITIAL_CASH = 100000.0
 STATE_FILE = 'portfolio_state.json'
 PUSHPLUS_TOKEN = os.environ.get('PUSHPLUS_TOKEN', '')
@@ -92,6 +93,42 @@ def build_position_block(state, current_prices, portfolio_value):
     lines.append(f"<p>💰 可用现金: ¥{cash:,.2f}（占比 {cash_ratio:.2%}）</p>")
     return "".join(lines)
 
+def check_position_alerts(state, current_prices, portfolio_value, logs):
+    """
+    对每个持仓标的进行止盈止损检查，规则与组合整体一致：
+    - 止损：单标的浮亏超过 15%（基于峰值净值计算）→ 🚨 紧急提醒
+    - 止盈：单标的浮盈超过 20%（基于峰值净值计算）→ 🎯 止盈提醒
+    峰值净值存储在 state['peak_value'] 中，单标的盈亏以持仓市值占比推算。
+    """
+    positions = state.get('positions', {})
+    peak_value = state.get('peak_value', portfolio_value)
+    alert_triggered = False
+
+    for code, shares in positions.items():
+        price = current_prices.get(code, 0)
+        if price <= 0 or shares <= 0:
+            continue
+        current_val = shares * price
+        # 用峰值净值中该标的的占比估算其成本基准
+        cost_basis = peak_value * (current_val / portfolio_value) if portfolio_value > 0 else current_val
+        pnl_ratio = (current_val - cost_basis) / cost_basis if cost_basis > 0 else 0
+        name = STOCK_NAMES.get(str(code), "未知标的")
+
+        if pnl_ratio <= -MAX_DRAWDOWN_LIMIT:
+            logs.append(
+                f"🚨 <b>止损警报！{code}（{name}）</b> 浮亏已达 <b>{pnl_ratio:.2%}</b>，"
+                f"触及 -{MAX_DRAWDOWN_LIMIT:.0%} 止损线，建议立即减仓或清仓！"
+            )
+            alert_triggered = True
+        elif pnl_ratio >= TAKE_PROFIT_LIMIT:
+            logs.append(
+                f"🎯 <b>止盈提醒！{code}（{name}）</b> 浮盈已达 <b>{pnl_ratio:.2%}</b>，"
+                f"触及 +{TAKE_PROFIT_LIMIT:.0%} 止盈线，建议考虑分批止盈。"
+            )
+            alert_triggered = True
+
+    return alert_triggered
+
 # ================= 核心逻辑 =================
 def market_trade():
     weekday = datetime.now().weekday()  # 0-6, 4是周五
@@ -119,9 +156,15 @@ def market_trade():
     # 插入当前持仓展示
     logs.append(build_position_block(state, current_prices, portfolio_value))
 
-    # --- A. 紧急风控 (每日检查) ---
+    # --- 单标的止盈止损检查（每日执行）---
+    alert_triggered = check_position_alerts(state, current_prices, portfolio_value, logs)
+    if alert_triggered:
+        # 有止盈止损提醒时，单独发送一条高优先级通知
+        send_pushplus("⚠️ 持仓止盈止损提醒", "<br>".join(logs))
+
+    # --- A. 组合整体紧急风控 (每日检查) ---
     if current_drawdown <= -MAX_DRAWDOWN_LIMIT:
-        logs.append("<b>🚨 紧急警报：回撤触及止损线！立即清空所有持仓。</b>")
+        logs.append("<b>🚨 紧急警报：组合整体回撤触及止损线！立即清空所有持仓。</b>")
         state['is_cooling'], state['cool_down_weeks'] = True, 2
         for stock in list(state['positions'].keys()):
             state['cash'] += state['positions'][stock] * current_prices[stock]
