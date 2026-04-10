@@ -44,6 +44,10 @@ INITIAL_CASH   = 100000.0
 STATE_FILE     = 'portfolio_state.json'
 PUSHPLUS_TOKEN = os.environ.get('PUSHPLUS_TOKEN', '')
 
+# 进攻仓位双边约束
+ALPHA_MAX = 0.60   # 进攻仓位上限：避免单仓押注
+ALPHA_MIN = 0.30   # 进攻仓位下限：RSRS已确认强势行情，进攻仓过小失去意义
+
 # 单标的差异化止盈止损（进攻 vs 防御）
 ALPHA_STOP_LOSS    = -0.12
 ALPHA_TAKE_PROFIT  =  0.25
@@ -365,6 +369,23 @@ def market_trade():
     inv_vol_sum = sum(1.0 / v for v in vols.values())
     for stock in selected_stocks:
         weights[stock] = (1.0 / vols[stock]) / inv_vol_sum
+
+    # 进攻仓位双边约束 + 归一化
+    if len(selected_stocks) == 2:
+        alpha_stocks = [s for s in selected_stocks if s in ALPHA_POOL]
+        beta_stocks  = [s for s in selected_stocks if s in BETA_POOL]
+        if alpha_stocks and beta_stocks:
+            a_code = alpha_stocks[0]
+            b_code = beta_stocks[0]
+            raw_alpha_w = weights[a_code]
+            clipped_alpha_w = max(ALPHA_MIN, min(ALPHA_MAX, raw_alpha_w))
+            weights[a_code] = clipped_alpha_w
+            weights[b_code] = 1.0 - clipped_alpha_w
+            if abs(clipped_alpha_w - raw_alpha_w) > 0.001:
+                logs.append(
+                    f"⚖️ 仓位约束触发：{get_stock_display(a_code)} 进攻仓原始权重 {raw_alpha_w:.2%} "
+                    f"→ 裁剪至 {clipped_alpha_w:.2%}（区间 [{ALPHA_MIN:.0%}, {ALPHA_MAX:.0%}]）"
+                )
 
     # 调仓建议
     logs.append("<h3>🛒 本周正式调仓建议：</h3><ul>")
