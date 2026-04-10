@@ -1,12 +1,1 @@
-{
-  "cash": 0.0,
-  "positions": {
-    "513100": 29400
-  },
-  "peak_value": 53184.6,
-  "is_cooling": false,
-  "cost_prices": {
-    "513100": 1.809
-  },
-  "cool_end_date": ""
-}
+{"cash": -151.8130799999999, "positions": {"512890": 45000}, "peak_value": 53184.6, "is_cooling": false, "cost_prices": {"512890": 1.181}, "cool_end_date": ""}
