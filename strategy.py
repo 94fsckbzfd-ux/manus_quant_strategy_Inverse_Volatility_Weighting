@@ -30,10 +30,16 @@ CASH_CODE = '511880'
 N_DAYS, M_DAYS = 18, 250
 S_BUY = 0.8
 MAX_DRAWDOWN_LIMIT = 0.15   # 组合止损线：回撤超过 15% 触发清仓
-TAKE_PROFIT_LIMIT = 0.20    # 组合止盈线：盈利超过 20% 触发提醒
+# TAKE_PROFIT_LIMIT = 0.20    # 组合止盈线：盈利超过 20% 触发提醒 (已废弃，改为单标的差异化设置)
 INITIAL_CASH = 100000.0
 STATE_FILE = 'portfolio_state.json'
 PUSHPLUS_TOKEN = os.environ.get('PUSHPLUS_TOKEN', '')
+
+# 单标的止盈止损设置
+ALPHA_STOP_LOSS = -0.12
+ALPHA_TAKE_PROFIT = 0.25
+BETA_STOP_LOSS = -0.06
+BETA_TAKE_PROFIT = 0.15
 
 # ================= 工具函数 =================
 def get_stock_display(code):
@@ -95,10 +101,7 @@ def build_position_block(state, current_prices, portfolio_value):
 
 def check_position_alerts(state, current_prices, portfolio_value, logs):
     """
-    对每个持仓标的进行止盈止损检查，规则与组合整体一致：
-    - 止损：单标的浮亏超过 15%（基于峰值净值计算）→ 🚨 紧急提醒
-    - 止盈：单标的浮盈超过 20%（基于峰值净值计算）→ 🎯 止盈提醒
-    峰值净值存储在 state['peak_value'] 中，单标的盈亏以持仓市值占比推算。
+    对每个持仓标的进行止盈止损检查。
     """
     positions = state.get('positions', {})
     peak_value = state.get('peak_value', portfolio_value)
@@ -114,16 +117,29 @@ def check_position_alerts(state, current_prices, portfolio_value, logs):
         pnl_ratio = (current_val - cost_basis) / cost_basis if cost_basis > 0 else 0
         name = STOCK_NAMES.get(str(code), "未知标的")
 
-        if pnl_ratio <= -MAX_DRAWDOWN_LIMIT:
+        stop_loss_limit = 0
+        take_profit_limit = 0
+
+        if code in ALPHA_POOL:
+            stop_loss_limit = ALPHA_STOP_LOSS
+            take_profit_limit = ALPHA_TAKE_PROFIT
+        elif code in BETA_POOL:
+            stop_loss_limit = BETA_STOP_LOSS
+            take_profit_limit = BETA_TAKE_PROFIT
+        else: # 默认值，例如现金或其他未分类标的
+            stop_loss_limit = -0.15 # 默认止损15%
+            take_profit_limit = 0.20 # 默认止盈20%
+
+        if pnl_ratio <= stop_loss_limit:
             logs.append(
                 f"🚨 <b>止损警报！{code}（{name}）</b> 浮亏已达 <b>{pnl_ratio:.2%}</b>，"
-                f"触及 -{MAX_DRAWDOWN_LIMIT:.0%} 止损线，建议立即减仓或清仓！"
+                f"触及 {stop_loss_limit:.0%} 止损线，建议立即减仓或清仓！"
             )
             alert_triggered = True
-        elif pnl_ratio >= TAKE_PROFIT_LIMIT:
+        elif pnl_ratio >= take_profit_limit:
             logs.append(
                 f"🎯 <b>止盈提醒！{code}（{name}）</b> 浮盈已达 <b>{pnl_ratio:.2%}</b>，"
-                f"触及 +{TAKE_PROFIT_LIMIT:.0%} 止盈线，建议考虑分批止盈。"
+                f"触及 +{take_profit_limit:.0%} 止盈线，建议考虑分批止盈。"
             )
             alert_triggered = True
 
