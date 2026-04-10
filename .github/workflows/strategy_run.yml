@@ -2,8 +2,8 @@ name: JoinQuant Strategy Auto Run
 
 on:
   schedule:
-    # GitHub使用UTC时间。北京时间 14:40 对应 UTC 时间 06:40
-    - cron: '40 6 * * 5'
+    # GitHub使用UTC时间。北京时间 13:30 对应 UTC 时间 05:30
+    - cron: '30 5 * * 5'
   workflow_dispatch: # 允许在 Actions 页面手动点击执行
 
 permissions:

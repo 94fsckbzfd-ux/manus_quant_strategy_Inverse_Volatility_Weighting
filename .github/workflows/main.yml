@@ -2,7 +2,7 @@ name: Quant Strategy Daily Run
 
 on:
   schedule:
-    - cron: '40 6 * * 1-5' # 北京时间周一至周五 14:40 (UTC 6:40)
+    - cron: '30 5 * * 1-5' # 北京时间周一至周五 13:30 (UTC 5:30)
   workflow_dispatch: # 允许手动触发
 
 permissions:
