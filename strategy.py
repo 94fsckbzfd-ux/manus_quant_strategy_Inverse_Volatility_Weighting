@@ -59,10 +59,10 @@ PUSHPLUS_TOKEN = os.environ.get('PUSHPLUS_TOKEN', '')
 
 # 单标的差异化止盈止损（进攻 vs 防御）
 # [v2.3] 进攻止损 -12% → -8%：100% 单押模式下集中度更高，需更枚断的止损保护
-ALPHA_STOP_LOSS    = -0.08   # [v2.3] -12% → -8%
-ALPHA_TAKE_PROFIT  =  0.25
-BETA_STOP_LOSS     = -0.06
-BETA_TAKE_PROFIT   =  0.15
+ALPHA_STOP_LOSS    = -0.07   # ETF 波动小，进攻止损 -8% → -7%
+ALPHA_TAKE_PROFIT  =  0.12   # ETF 波动小，进攻止盈 +25% → +12%
+BETA_STOP_LOSS     = -0.05   # 防御止损 -6% → -5%
+BETA_TAKE_PROFIT   =  0.08   # 防御止盈 +15% → +8%
 
 # [P1] 交易成本
 COMMISSION_RATE = 0.0003   # 佣金：万3（双向）
