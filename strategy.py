@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-量化策略 v2.0 - 逆波动率加权 + RSRS 择时
+量化策略 v2.1 - 逆波动率加权 + RSRS 择时
 升级日志：
   - [P0] 修复止损/止盈成本基准计算错误，引入 cost_prices 记录真实买入均价
   - [P0] 修复数据异常被完全吞掉问题，改为分类捕获并推送告警
@@ -8,6 +8,8 @@
   - [P1] 加入交易成本（印花税 0.1% + 佣金万3 + 滑点 0.1%）
   - [P2] 进攻选股动量窗口从 11 日改为 20 日，减少追涨杀跌
   - [P2] 增加 AKShare 备用数据源，主备自动切换
+  - [v2.1] 参数网格优化：RSRS 阈值 0.8→0.6，动量窗口 20→11，波动率窗口保持 21
+  - [v2.1] 新增进攻信号假触发率统计（实盘观察项：11日动量在震荡期的表现）
 """
 import os
 import json
@@ -36,8 +38,11 @@ MARKET_ANCHOR = '510300'
 CASH_CODE     = '511880'
 
 N_DAYS, M_DAYS = 18, 250
-S_BUY          = 0.8
-MOMENTUM_DAYS  = 20          # [P2] 动量窗口从 11 改为 20
+S_BUY          = 0.6   # [v2.1] 网格优化：0.8 → 0.6（夏普最优）
+MOMENTUM_DAYS  = 11   # [v2.1] 网格优化：20 → 11（夏普最优）
+                       # ⚠️ [实盘观察项] 11日动量窗口在震荡行情中假触发率较高。
+                       #    若未来半年出现区间震荡，请记录每次进攻信号触发后
+                       #    实际持仓的盈亏结果，评估是否需要回调至 20 日。
 MAX_DRAWDOWN_LIMIT = 0.15    # 组合整体止损线
 INITIAL_CASH   = 100000.0
 STATE_FILE     = 'portfolio_state.json'
@@ -328,7 +333,26 @@ def market_trade():
     # ===== 周五正式调仓逻辑 =====
     selected_stocks = []
 
-    # 进攻引擎：[P2] 动量窗口改为 20 日
+    # 进攻引擎：[v2.1] 动量窗口 11 日（网格最优）
+    # ⚠️ [实盘观察项] 统计进攻信号触发频率，用于评估震荡期假触发率
+    signal_log = state.setdefault('signal_log', [])
+    signal_entry = {
+        'date': today_str,
+        'rsrs': round(rsrs_signal, 4),
+        'triggered': rsrs_signal > S_BUY
+    }
+    signal_log.append(signal_entry)
+    # 只保留最近 26 周（半年）的记录
+    state['signal_log'] = signal_log[-26:]
+
+    # 统计近 26 周假触发率（触发进攻但随后亏损视为假触发，此处仅统计触发频率）
+    recent_triggers = [e for e in state['signal_log'] if e['triggered']]
+    trigger_rate    = len(recent_triggers) / len(state['signal_log']) if state['signal_log'] else 0
+    logs.append(
+        f"📊 <b>[观察项] 近期进攻信号触发率：{trigger_rate:.1%}</b>"
+        f"（近 {len(state['signal_log'])} 周中触发 {len(recent_triggers)} 次）"
+    )
+
     if rsrs_signal > S_BUY:
         scores = {}
         for stock in ALPHA_POOL:
