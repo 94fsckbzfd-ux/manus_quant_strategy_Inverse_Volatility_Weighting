@@ -10,6 +10,7 @@
   - [P2] 增加 AKShare 备用数据源，主备自动切换
   - [v2.1] 参数网格优化：RSRS 阈值 0.8→0.6，动量窗口 20→11，波动率窗口保持 21
   - [v2.1] 新增进攻信号假触发率统计（实盘观察项：11日动量在震荡期的表现）
+  - [v2.2] 引入三模式明确状态变量（ATTACK/DEFENSE/CASH），修复进攻模式下隐式携带防御底仓的逻辑歧义
 """
 import os
 import json
@@ -20,6 +21,10 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 
 # ================= 策略配置 =================
+# 三种明确模式常量
+MODE_ATTACK  = "attack"    # RSRS > S_BUY 且进攻池有动量信号 → 纯进攻（100% 进攻仓）
+MODE_DEFENSE = "defense"   # RSRS <= S_BUY → 纯防御（选防御池最优标的）
+MODE_CASH    = "cash"      # 无任何信号 → 避险（银华日利）
 STOCK_NAMES = {
     '512480': '半导体ETF',
     '516820': '氢能ETF',       # 替换 159206（中证1000），降低进攻池内部相关性
@@ -331,28 +336,10 @@ def market_trade():
         return
 
     # ===== 周五正式调仓逻辑 =====
-    selected_stocks = []
+    # [v2.2] 三模式明确状态判断
 
-    # 进攻引擎：[v2.1] 动量窗口 11 日（网格最优）
-    # ⚠️ [实盘观察项] 统计进攻信号触发频率，用于评估震荡期假触发率
-    signal_log = state.setdefault('signal_log', [])
-    signal_entry = {
-        'date': today_str,
-        'rsrs': round(rsrs_signal, 4),
-        'triggered': rsrs_signal > S_BUY
-    }
-    signal_log.append(signal_entry)
-    # 只保留最近 26 周（半年）的记录
-    state['signal_log'] = signal_log[-26:]
-
-    # 统计近 26 周假触发率（触发进攻但随后亏损视为假触发，此处仅统计触发频率）
-    recent_triggers = [e for e in state['signal_log'] if e['triggered']]
-    trigger_rate    = len(recent_triggers) / len(state['signal_log']) if state['signal_log'] else 0
-    logs.append(
-        f"📊 <b>[观察项] 近期进攻信号触发率：{trigger_rate:.1%}</b>"
-        f"（近 {len(state['signal_log'])} 周中触发 {len(recent_triggers)} 次）"
-    )
-
+    # --- 第一步：判断进攻池是否有动量信号 ---
+    alpha_signal = None
     if rsrs_signal > S_BUY:
         scores = {}
         for stock in ALPHA_POOL:
@@ -362,53 +349,70 @@ def market_trade():
                 if ret > 0.03:
                     scores[stock] = ret
         if scores:
-            best_alpha = sorted(scores, key=scores.get, reverse=True)[0]
-            selected_stocks.append(best_alpha)
-            logs.append(f"⚔️ 进攻引擎: 选中 {get_stock_display(best_alpha)}")
+            alpha_signal = sorted(scores, key=scores.get, reverse=True)[0]
 
-    # 防御引擎
-    beta_scores = {}
-    for stock in BETA_POOL:
-        p = get_price(stock, count=21)
-        if len(p) >= 21:
-            ret = p['close'].iloc[-1] / p['close'].iloc[0] - 1
-            vol = np.std(p['close'].pct_change().dropna())
-            beta_scores[stock] = ret / vol if vol > 0 else 0
-    if beta_scores:
-        best_beta = sorted(beta_scores, key=beta_scores.get, reverse=True)[0]
-        selected_stocks.append(best_beta)
-        logs.append(f"🛡️ 防御引擎: 选中 {get_stock_display(best_beta)}")
+    # --- 第二步：确定当前模式 ---
+    if alpha_signal:
+        current_mode = MODE_ATTACK
+    elif rsrs_signal <= S_BUY:
+        current_mode = MODE_DEFENSE
+    else:
+        current_mode = MODE_CASH
 
-    if not selected_stocks:
+    mode_labels = {
+        MODE_ATTACK:  "⚔️ 进攻模式（ATTACK）",
+        MODE_DEFENSE: "🛡️ 防御模式（DEFENSE）",
+        MODE_CASH:    "💤 避险模式（CASH）",
+    }
+    logs.append(f"<b>🎯 当前模式：{mode_labels[current_mode]}</b>")
+
+    # --- 第三步：根据模式确定持仓和权重 ---
+    selected_stocks = []
+    weights = {}
+
+    if current_mode == MODE_ATTACK:
+        # 纯进攻：100% 进攻仓，不携带防御底仓
+        selected_stocks = [alpha_signal]
+        weights[alpha_signal] = 1.0
+        logs.append(f"⚔️ 进攻引擎: 选中 {get_stock_display(alpha_signal)}（100%）")
+
+    elif current_mode == MODE_DEFENSE:
+        # 纯防御：选防御池中夏普最优的一只，100% 防御仓
+        beta_scores = {}
+        for stock in BETA_POOL:
+            p = get_price(stock, count=21)
+            if len(p) >= 21:
+                ret = p['close'].iloc[-1] / p['close'].iloc[0] - 1
+                vol = np.std(p['close'].pct_change().dropna())
+                beta_scores[stock] = ret / vol if vol > 0 else 0
+        if beta_scores:
+            best_beta = sorted(beta_scores, key=beta_scores.get, reverse=True)[0]
+            selected_stocks = [best_beta]
+            weights[best_beta] = 1.0
+            logs.append(f"🛡️ 防御引擎: 选中 {get_stock_display(best_beta)}（100%）")
+        else:
+            current_mode = MODE_CASH
+
+    if current_mode == MODE_CASH or not selected_stocks:
+        # 避险：全仓转入货币
         selected_stocks = [CASH_CODE]
-        logs.append(f"💤 避险至 {get_stock_display(CASH_CODE)}")
+        weights[CASH_CODE] = 1.0
+        logs.append(f"💤 避险至 {get_stock_display(CASH_CODE)}（100%）")
 
-    # 波动率加权
-    weights, vols = {}, {}
-    for stock in selected_stocks:
-        p   = get_price(stock, count=21)
-        vol = np.std(p['close'].pct_change().dropna()) if not p.empty else 0
-        vols[stock] = vol if vol > 0 else 0.02
-    inv_vol_sum = sum(1.0 / v for v in vols.values())
-    for stock in selected_stocks:
-        weights[stock] = (1.0 / vols[stock]) / inv_vol_sum
-
-    # 进攻仓位双边约束 + 归一化
-    if len(selected_stocks) == 2:
-        alpha_stocks = [s for s in selected_stocks if s in ALPHA_POOL]
-        beta_stocks  = [s for s in selected_stocks if s in BETA_POOL]
-        if alpha_stocks and beta_stocks:
-            a_code = alpha_stocks[0]
-            b_code = beta_stocks[0]
-            raw_alpha_w = weights[a_code]
-            clipped_alpha_w = max(ALPHA_MIN, min(ALPHA_MAX, raw_alpha_w))
-            weights[a_code] = clipped_alpha_w
-            weights[b_code] = 1.0 - clipped_alpha_w
-            if abs(clipped_alpha_w - raw_alpha_w) > 0.001:
-                logs.append(
-                    f"⚖️ 仓位约束触发：{get_stock_display(a_code)} 进攻仓原始权重 {raw_alpha_w:.2%} "
-                    f"→ 裁剪至 {clipped_alpha_w:.2%}（区间 [{ALPHA_MIN:.0%}, {ALPHA_MAX:.0%}]）"
-                )
+    # --- 第四步：[实盘观察项] 统计进攻信号触发频率 ---
+    signal_log = state.setdefault('signal_log', [])
+    signal_log.append({
+        'date': today_str,
+        'rsrs': round(rsrs_signal, 4),
+        'mode': current_mode
+    })
+    state['signal_log'] = signal_log[-26:]
+    recent_attacks = [e for e in state['signal_log'] if e['mode'] == MODE_ATTACK]
+    trigger_rate   = len(recent_attacks) / len(state['signal_log']) if state['signal_log'] else 0
+    logs.append(
+        f"📊 <b>[观察项] 近期进攻模式触发率：{trigger_rate:.1%}</b>"
+        f"（近 {len(state['signal_log'])} 周中进攻 {len(recent_attacks)} 次）"
+    )
 
     # 调仓建议
     logs.append("<h3>🛒 本周正式调仓建议：</h3><ul>")
