@@ -47,8 +47,11 @@ CASH_CODE     = '511880'
 N_DAYS, M_DAYS = 18, 250
 S_BUY          = 0.7   # [v2.4] 新架构网格验证最优：0.6 → 0.7
 MOMENTUM_DAYS  = 20    # [v2.4] 新架构网格验证最优：11 → 20（震荡市更稳健）
-BETA_LOOKBACK  = 60    # [v2.4] 防御池选股窗口：21 → 60（更能体现黄金/消费ETF的长期防御特性）
-MA60_WINDOW    = 60    # [v2.4] MA60 均线窗口，用于双重择时过滤
+BETA_LOOKBACK  = 30    # 网格验证最优：30 天（在 14/21/30 中表现最佳）
+MA60_WINDOW    = 60    # [v2.4] MA60 均线窗口
+                       # ⚠️ [实盘观察项] MA60 过滤在震荡市降低假信号的效果待验证。
+                       #    若未来半年内出现区间震荡，请对比 MA60 过滤前后的进攻信号触发次数和盈亏结果，
+                       #    评估是否应保留该过滤条件。
 MAX_DRAWDOWN_LIMIT = 0.15    # 组合整体止损线
 INITIAL_CASH   = 100000.0
 STATE_FILE     = 'portfolio_state.json'
