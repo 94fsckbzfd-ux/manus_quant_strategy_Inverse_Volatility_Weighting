@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-量化策略 v2.3 - 三模式单押 + RSRS 择时
+量化策略 v2.4 - 三模式单押 + RSRS×MA60 双重择时
 升级日志：
   - [P0] 修复止损/止盈成本基准计算错误，引入 cost_prices 记录真实买入均价
   - [P0] 修复数据异常被完全吞掉问题，改为分类捕获并推送告警
@@ -12,6 +12,7 @@
   - [v2.1] 新增进攻信号假触发率统计（实盘观察项：11日动量在震荡期的表现）
   - [v2.2] 引入三模式明确状态变量（ATTACK/DEFENSE/CASH），修复进攻模式下隐式携带防御底仓的逻辑歧义
   - [v2.3] 清理死代码（波动率加权/仓位约束模块），收紧进攻止损 -12% → -8%，标记参数待新架构网格验证
+  - [v2.4] 新架构网格验证完成：RSRS=0.7、动量=20天、防御窗口=60天；加入 MA60 双重择时过滤，降低震荡市假信号
 """
 import os
 import json
@@ -44,9 +45,10 @@ MARKET_ANCHOR = '510300'
 CASH_CODE     = '511880'
 
 N_DAYS, M_DAYS = 18, 250
-S_BUY          = 0.6   # ❗待验证：基于旧架构网格结果，新三模式架构待重跑网格确认
-MOMENTUM_DAYS  = 11    # ❗待验证：基于旧架构网格结果，新三模式架构待重跑网格确认
-                       # ⚠️ [实盘观察项] 11日动量窗口在震荡行情中假触发率较高，待新网格结果出来后再确认最终参数。
+S_BUY          = 0.7   # [v2.4] 新架构网格验证最优：0.6 → 0.7
+MOMENTUM_DAYS  = 20    # [v2.4] 新架构网格验证最优：11 → 20（震荡市更稳健）
+BETA_LOOKBACK  = 60    # [v2.4] 防御池选股窗口：21 → 60（更能体现黄金/消费ETF的长期防御特性）
+MA60_WINDOW    = 60    # [v2.4] MA60 均线窗口，用于双重择时过滤
 MAX_DRAWDOWN_LIMIT = 0.15    # 组合整体止损线
 INITIAL_CASH   = 100000.0
 STATE_FILE     = 'portfolio_state.json'
@@ -327,6 +329,14 @@ def market_trade():
         return
     logs.append(f"📡 RSRS信号: {rsrs_signal:.4f} (阈值: {S_BUY})")
 
+    # 日间监控也计算并展示 MA60 趋势状态
+    anchor_daily = get_price(MARKET_ANCHOR, count=MA60_WINDOW + 1)
+    if len(anchor_daily) >= MA60_WINDOW:
+        ma60_val = anchor_daily['close'].iloc[-MA60_WINDOW:].mean()
+        cur_val  = anchor_daily['close'].iloc[-1]
+        trend_str = f"✅ 在均线上（{cur_val:.2f} > MA60 {ma60_val:.2f}）" if cur_val > ma60_val else f"🔴 在均线下（{cur_val:.2f} < MA60 {ma60_val:.2f}）"
+        logs.append(f"📈 沪淳300 MA60 趋势：{trend_str}")
+
     if not is_friday:
         send_pushplus("日间监控报告 - 趋势观察", "<br>".join(logs))
         return
@@ -334,9 +344,20 @@ def market_trade():
     # ===== 周五正式调仓逻辑 =====
     # [v2.2] 三模式明确状态判断
 
-    # --- 第一步：判断进攻池是否有动量信号 ---
+    # --- 第一步：判断进攻池是否有动量信号（RSRS × MA60 双重过滤）---
+    # [v2.4] 双重择时：RSRS > 阈值 AND 沪淳300 当前价 > 60日均线
+    # MA60 在 2021-2022 年震荡期可显著减少换手次数，降低摩擦成本
+    anchor_prices = get_price(MARKET_ANCHOR, count=MA60_WINDOW + 1)
+    if len(anchor_prices) >= MA60_WINDOW:
+        ma60 = anchor_prices['close'].iloc[-MA60_WINDOW:].mean()
+        current_anchor = anchor_prices['close'].iloc[-1]
+        is_uptrend = current_anchor > ma60
+    else:
+        is_uptrend = True   # 数据不足时默认放行，避免误杀
+        logs.append("⚠️ MA60 数据不足，跳过趋势过滤")
+
     alpha_signal = None
-    if rsrs_signal > S_BUY:
+    if rsrs_signal > S_BUY and is_uptrend:
         scores = {}
         for stock in ALPHA_POOL:
             p = get_price(stock, count=MOMENTUM_DAYS + 1)
@@ -374,10 +395,11 @@ def market_trade():
 
     elif current_mode == MODE_DEFENSE:
         # 纯防御：选防御池中夏普最优的一只，100% 防御仓
+        # [v2.4] 选股窗口从 21 天改为 60 天，更能体现黄金/消费ETF 的长期防御特性
         beta_scores = {}
         for stock in BETA_POOL:
-            p = get_price(stock, count=21)
-            if len(p) >= 21:
+            p = get_price(stock, count=BETA_LOOKBACK)
+            if len(p) >= BETA_LOOKBACK:
                 ret = p['close'].iloc[-1] / p['close'].iloc[0] - 1
                 vol = np.std(p['close'].pct_change().dropna())
                 beta_scores[stock] = ret / vol if vol > 0 else 0
